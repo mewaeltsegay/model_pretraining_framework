@@ -16,74 +16,118 @@ def load_config_from_args() -> TrainingConfig:
     parser = argparse.ArgumentParser(description="Qwen Pretraining Configuration")
     
     # Model configuration
-    parser.add_argument("--model-name", type=str, default="Qwen/Qwen-0.5B",
+    parser.add_argument("--model-name", type=str, default=None,
                        help="Hugging Face model name")
-    parser.add_argument("--tokenizer-path", type=str, default="./tokenizer",
+    parser.add_argument("--tokenizer-path", type=str, default=None,
                        help="Path to tokenizer directory")
-    parser.add_argument("--data-dir", type=str, default="./dataset",
+    parser.add_argument("--data-dir", type=str, default=None,
                        help="Path to dataset directory")
     
     # Training parameters
-    parser.add_argument("--batch-size", type=int, default=2,
+    parser.add_argument("--batch-size", type=int, default=None,
                        help="Training batch size")
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8,
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=None,
                        help="Gradient accumulation steps")
-    parser.add_argument("--learning-rate", type=float, default=5e-5,
+    parser.add_argument("--learning-rate", type=float, default=None,
                        help="Learning rate")
-    parser.add_argument("--num-epochs", type=int, default=3,
+    parser.add_argument("--num-epochs", type=int, default=None,
                        help="Number of training epochs")
-    parser.add_argument("--max-sequence-length", type=int, default=512,
+    parser.add_argument("--max-sequence-length", type=int, default=None,
                        help="Maximum sequence length")
-    parser.add_argument("--warmup-steps", type=int, default=500,
+    parser.add_argument("--warmup-steps", type=int, default=None,
                        help="Number of warmup steps")
-    parser.add_argument("--weight-decay", type=float, default=0.01,
+    parser.add_argument("--weight-decay", type=float, default=None,
                        help="Weight decay")
     
     # Memory optimization
-    parser.add_argument("--max-gpu-memory-gb", type=float, default=5.5,
+    parser.add_argument("--max-gpu-memory-gb", type=float, default=None,
                        help="Maximum GPU memory to use (GB)")
-    parser.add_argument("--use-mixed-precision", action="store_true", default=True,
+    parser.add_argument("--use-mixed-precision", action="store_true", default=None,
                        help="Use mixed precision training")
-    parser.add_argument("--gradient-checkpointing", action="store_true", default=True,
+    parser.add_argument("--no-mixed-precision", dest="use_mixed_precision", action="store_false",
+                       help="Disable mixed precision training")
+    parser.add_argument("--gradient-checkpointing", action="store_true", default=None,
                        help="Use gradient checkpointing")
+    parser.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false",
+                       help="Disable gradient checkpointing")
     
     # Monitoring and checkpointing
-    parser.add_argument("--logging-steps", type=int, default=100,
+    parser.add_argument("--logging-steps", type=int, default=None,
                        help="Log every N steps")
-    parser.add_argument("--save-steps", type=int, default=1000,
+    parser.add_argument("--save-steps", type=int, default=None,
                        help="Save checkpoint every N steps")
-    parser.add_argument("--eval-steps", type=int, default=500,
+    parser.add_argument("--eval-steps", type=int, default=None,
                        help="Evaluate every N steps")
-    parser.add_argument("--output-dir", type=str, default="./checkpoints",
+    parser.add_argument("--output-dir", type=str, default=None,
                        help="Output directory for checkpoints")
     
     # Other parameters
-    parser.add_argument("--seed", type=int, default=42,
+    parser.add_argument("--seed", type=int, default=None,
                        help="Random seed")
-    parser.add_argument("--config-file", type=str, default=None,
+    parser.add_argument("--config", "--config-file", type=str, default=None, dest="config_file",
                        help="Path to configuration file (JSON or YAML)")
     
     args = parser.parse_args()
     
     # If config file is provided, load from file and override with command line args
     if args.config_file:
+        import sys
         config = load_config_from_file(args.config_file)
-        # Override with command line arguments
-        config_dict = config.to_dict()
+        # Override with command line arguments (only if explicitly provided)
+        # Check which arguments were actually provided in sys.argv
+        provided_args = set()
+        for arg in sys.argv:
+            if arg.startswith('--'):
+                # Remove leading -- and convert to config key format
+                arg_name = arg[2:].replace('-', '_')
+                provided_args.add(arg_name)
+                # Also check for negative flags
+                if arg_name.startswith('no_'):
+                    provided_args.add(arg_name[3:])  # Remove 'no_' prefix
+        
         for key, value in vars(args).items():
-            if key != "config_file" and value is not None:
-                # Convert hyphenated keys to underscore
-                config_key = key.replace("-", "_")
-                if config_key in config_dict:
+            if key == "config_file":
+                continue
+            
+            # Convert hyphenated keys to underscore
+            config_key = key.replace("-", "_")
+            
+            # Only override if the argument was explicitly provided
+            if config_key in provided_args and value is not None:
+                if hasattr(config, config_key):
                     setattr(config, config_key, value)
         return config
     else:
-        # Create config from command line arguments
-        config_dict = {
-            key.replace("-", "_"): value 
-            for key, value in vars(args).items() 
-            if key != "config_file"
+        # Create config from command line arguments with defaults
+        # Use defaults from TrainingConfig if not provided
+        defaults = {
+            "model_name": "Qwen/Qwen2-0.5B",
+            "tokenizer_path": "./tokenizer",
+            "data_dir": "./dataset",
+            "batch_size": 2,
+            "gradient_accumulation_steps": 8,
+            "learning_rate": 5e-5,
+            "num_epochs": 3,
+            "max_sequence_length": 512,
+            "warmup_steps": 500,
+            "weight_decay": 0.01,
+            "max_gpu_memory_gb": 5.5,
+            "use_mixed_precision": True,
+            "gradient_checkpointing": True,
+            "logging_steps": 100,
+            "save_steps": 1000,
+            "eval_steps": 500,
+            "output_dir": "./checkpoints",
+            "seed": 42,
         }
+        
+        config_dict = {}
+        for key, value in vars(args).items():
+            if key != "config_file":
+                config_key = key.replace("-", "_")
+                # Use provided value or default
+                config_dict[config_key] = value if value is not None else defaults.get(config_key)
+        
         return TrainingConfig(**config_dict)
 
 
