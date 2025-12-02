@@ -89,6 +89,8 @@ events.out.tfevents.*
 config.json
 config_*.json
 !config_example.json
+!config_l4.json
+!config_h100.json
 
 # OS
 .DS_Store

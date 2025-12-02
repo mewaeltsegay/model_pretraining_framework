@@ -1,0 +1,27 @@
+{
+  "title": "QWEN PRETRAINING - L4 GPU OPTIMIZED",
+  "model_name": "Qwen/Qwen2-0.5B",
+  "tokenizer_path": "./tokenizer",
+  "data_dir": "./dataset",
+  "batch_size": 8,
+  "gradient_accumulation_steps": 4,
+  "max_sequence_length": 512,
+  "learning_rate": 5e-05,
+  "num_epochs": 3,
+  "warmup_steps": 500,
+  "weight_decay": 0.01,
+  "max_gpu_memory_gb": 22.0,
+  "use_mixed_precision": true,
+  "gradient_checkpointing": true,
+  "logging_steps": 100,
+  "save_steps": 1000,
+  "eval_steps": 500,
+  "output_dir": "./checkpoints",
+  "seed": 42,
+  "dataloader_num_workers": 4,
+  "save_total_limit": 3,
+  "max_train_samples": null,
+  "max_val_samples": null,
+  "enable_tensorboard": true
+}
+
