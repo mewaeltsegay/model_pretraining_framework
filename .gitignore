@@ -146,7 +146,7 @@ dmypy.json
 
 # Model outputs
 outputs/
-models/
+!models/
 saved_models/
 
 # Weights & Biases
