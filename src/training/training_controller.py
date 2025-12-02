@@ -14,7 +14,8 @@ from torch.optim.lr_scheduler import LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from transformers import AutoModelForCausalLM, get_linear_schedule_with_warmup
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
+from torch.amp import autocast
 from tqdm import tqdm
 import psutil
 import gc
@@ -258,7 +259,7 @@ class TrainingController:
                 batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
                 # Forward pass with mixed precision
-                with autocast(enabled=self.config.use_mixed_precision):
+                with autocast(device_type='cuda', enabled=self.config.use_mixed_precision):
                     outputs = model(**batch)
                     loss = outputs.loss
                     
@@ -328,6 +329,17 @@ class TrainingController:
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     logger.warning(f"CUDA OOM error at step {step}. Attempting recovery...")
+                    # Reset gradient scaler state before handling OOM
+                    # This prevents "unscale_() has already been called" errors
+                    if self.config.use_mixed_precision and self.scaler is not None:
+                        try:
+                            optimizer.zero_grad()
+                            # Reset scaler by calling update() - this resets internal state
+                            self.scaler.update()
+                        except Exception as scaler_error:
+                            logger.warning(f"Could not reset scaler: {scaler_error}. Creating new scaler.")
+                            # If update fails, create a new scaler
+                            self.scaler = GradScaler()
                     self._handle_oom_error(model, optimizer)
                     continue
                 else:
@@ -381,6 +393,23 @@ class TrainingController:
             optimizer: The optimizer
         """
         logger.warning("Handling CUDA OOM error...")
+        
+        # Reset gradient scaler state if using mixed precision
+        # This is critical because the scaler might be in an inconsistent state after OOM
+        if self.config.use_mixed_precision and self.scaler is not None:
+            # The scaler might be in a state where unscale_() was called but update() wasn't
+            # We need to reset it by calling update() even if there are no gradients
+            # This will reset the scaler's internal state
+            try:
+                # Clear any pending operations first
+                optimizer.zero_grad()
+                # Reset scaler by calling update() - this will reset its internal state
+                # even if we haven't called step(), it will just reset the scale factor tracking
+                self.scaler.update()
+            except Exception as e:
+                logger.warning(f"Could not reset scaler state: {e}. Creating new scaler.")
+                # If update fails, create a new scaler
+                self.scaler = GradScaler()
         
         # Clear gradients and memory
         optimizer.zero_grad()
@@ -770,7 +799,7 @@ class TrainingController:
                 batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
                 # Forward pass with mixed precision
-                with autocast(enabled=self.config.use_mixed_precision):
+                with autocast(device_type='cuda', enabled=self.config.use_mixed_precision):
                     outputs = model(**batch)
                     loss = outputs.loss
                     
@@ -854,6 +883,17 @@ class TrainingController:
             except RuntimeError as e:
                 if "out of memory" in str(e).lower():
                     logger.warning(f"CUDA OOM error at step {step}. Attempting recovery...")
+                    # Reset gradient scaler state before handling OOM
+                    # This prevents "unscale_() has already been called" errors
+                    if self.config.use_mixed_precision and self.scaler is not None:
+                        try:
+                            optimizer.zero_grad()
+                            # Reset scaler by calling update() - this resets internal state
+                            self.scaler.update()
+                        except Exception as scaler_error:
+                            logger.warning(f"Could not reset scaler: {scaler_error}. Creating new scaler.")
+                            # If update fails, create a new scaler
+                            self.scaler = GradScaler()
                     self._handle_oom_error(model, optimizer)
                     continue
                 else:
