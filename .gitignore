@@ -1,0 +1,162 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Model Checkpoints and Weights
+checkpoints/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Logs
+*.log
+logs/
+checkpoints/logs/
+test_output/logs/
+tensorboard_logs/
+
+# TensorBoard
+tensorboard_logs/
+events.out.tfevents.*
+*.tfevents.*
+
+# Data (uncomment if you don't want to track data files)
+# dataset/
+# *.jsonl
+
+# Tokenizer (uncomment if you don't want to track tokenizer files)
+# tokenizer/
+# *.model
+# *.vocab
+
+# Configuration files with sensitive data
+config.json
+config_*.json
+!config_example.json
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+# Test outputs
+test_output/
+*.test
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Profiling
+*.prof
+*.lprof
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Model outputs
+outputs/
+models/
+saved_models/
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+
+# Other
+*.orig
+*.rej
+
+tokenizer/
+dataset/
+
