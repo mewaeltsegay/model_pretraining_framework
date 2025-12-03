@@ -7,7 +7,6 @@ import json
 import logging
 import shutil
 import hashlib
-import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, asdict
@@ -112,78 +111,6 @@ class CheckpointManager:
             cuda_version=torch.version.cuda if torch.cuda.is_available() else None
         )
     
-    def _check_disk_space(self, required_mb: float = 5000.0) -> bool:
-        """
-        Check if there's enough disk space available.
-        
-        Args:
-            required_mb: Required space in MB (default 5GB)
-            
-        Returns:
-            True if enough space is available
-        """
-        try:
-            stat = shutil.disk_usage(self.checkpoint_dir)
-            free_gb = stat.free / (1024 ** 3)
-            required_gb = required_mb / 1024
-            
-            if free_gb < required_gb:
-                logger.warning(
-                    f"Insufficient disk space: {free_gb:.2f}GB free, "
-                    f"{required_gb:.2f}GB required"
-                )
-                return False
-            
-            logger.debug(f"Disk space check: {free_gb:.2f}GB free, {required_gb:.2f}GB required")
-            return True
-        except Exception as e:
-            logger.warning(f"Could not check disk space: {e}")
-            return True  # Assume OK if we can't check
-    
-    def _save_with_retry(self, data: Any, file_path: Path, max_retries: int = 3, 
-                        retry_delay: float = 1.0) -> None:
-        """
-        Save data to file with retry logic.
-        
-        Args:
-            data: Data to save (model state, optimizer state, etc.)
-            file_path: Path to save file
-            max_retries: Maximum number of retry attempts
-            retry_delay: Delay between retries in seconds
-        """
-        for attempt in range(max_retries):
-            try:
-                # Save to temporary file first, then rename (atomic operation)
-                temp_path = file_path.with_suffix(file_path.suffix + '.tmp')
-                
-                # Remove temp file if it exists
-                if temp_path.exists():
-                    temp_path.unlink()
-                
-                # Save to temp file
-                torch.save(data, temp_path)
-                
-                # Atomic rename
-                temp_path.replace(file_path)
-                
-                # Verify file was written correctly
-                if not file_path.exists() or file_path.stat().st_size == 0:
-                    raise RuntimeError(f"File {file_path} is empty or missing after save")
-                
-                return  # Success
-                
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Failed to save {file_path} (attempt {attempt + 1}/{max_retries}): {e}. "
-                        f"Retrying in {retry_delay}s..."
-                    )
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(f"Failed to save {file_path} after {max_retries} attempts: {e}")
-                    raise
-    
     def save_checkpoint(self, model: AutoModelForCausalLM, optimizer: Optimizer, 
                        scheduler: _LRScheduler, epoch: int, step: int, loss: float,
                        val_loss: Optional[float] = None) -> str:
@@ -205,32 +132,22 @@ class CheckpointManager:
         checkpoint_path = self._get_checkpoint_path(step)
         
         try:
-            # Check disk space before attempting save
-            if not self._check_disk_space(required_mb=5000.0):
-                raise RuntimeError(
-                    "Insufficient disk space to save checkpoint. "
-                    "Please free up space or reduce save_total_limit."
-                )
-            
             # Create checkpoint directory
             checkpoint_path.mkdir(parents=True, exist_ok=True)
             
             logger.info(f"Saving checkpoint at step {step} to {checkpoint_path}")
             
-            # Save model state with retry
+            # Save model state
             model_path = checkpoint_path / self.model_file
-            logger.debug(f"Saving model state to {model_path}")
-            self._save_with_retry(model.state_dict(), model_path)
+            torch.save(model.state_dict(), model_path)
             
-            # Save optimizer state with retry
+            # Save optimizer state
             optimizer_path = checkpoint_path / self.optimizer_file
-            logger.debug(f"Saving optimizer state to {optimizer_path}")
-            self._save_with_retry(optimizer.state_dict(), optimizer_path)
+            torch.save(optimizer.state_dict(), optimizer_path)
             
-            # Save scheduler state with retry
+            # Save scheduler state
             scheduler_path = checkpoint_path / self.scheduler_file
-            logger.debug(f"Saving scheduler state to {scheduler_path}")
-            self._save_with_retry(scheduler.state_dict(), scheduler_path)
+            torch.save(scheduler.state_dict(), scheduler_path)
             
             # Create and save metadata
             metadata = self._create_metadata(epoch, step, loss, val_loss, 
@@ -249,7 +166,7 @@ class CheckpointManager:
             
             logger.info(f"Checkpoint saved successfully: {checkpoint_path}")
             
-            # Cleanup old checkpoints (after successful save)
+            # Cleanup old checkpoints
             self._cleanup_old_checkpoints()
             
             return str(checkpoint_path)
@@ -258,11 +175,7 @@ class CheckpointManager:
             logger.error(f"Failed to save checkpoint: {e}")
             # Clean up partial checkpoint on failure
             if checkpoint_path.exists():
-                try:
-                    shutil.rmtree(checkpoint_path)
-                    logger.info(f"Cleaned up partial checkpoint: {checkpoint_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to clean up partial checkpoint: {cleanup_error}")
+                shutil.rmtree(checkpoint_path)
             raise
     
     def load_checkpoint(self, model: AutoModelForCausalLM, optimizer: Optimizer,
