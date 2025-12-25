@@ -700,13 +700,35 @@ class TrainingController:
         
         # Try to resume from checkpoint if requested
         start_epoch = 0
+        skip_batches_in_epoch = 0  # Number of batches to skip in the first epoch when resuming
         if resume_from_checkpoint:
             latest_checkpoint = self.get_latest_checkpoint()
             if latest_checkpoint:
                 try:
                     metadata = self.load_checkpoint(model, optimizer, scheduler, latest_checkpoint)
                     start_epoch = metadata.epoch
-                    logger.info(f"Resumed training from checkpoint at epoch {start_epoch}")
+                    
+                    # Calculate how many batches to skip in the resumed epoch
+                    try:
+                        batches_per_epoch = len(train_dataloader)
+                        if batches_per_epoch > 0:
+                            # Calculate which batch we stopped at in this epoch
+                            # global_step counts optimizer steps (after gradient accumulation)
+                            # With gradient accumulation, N batches = 1 step
+                            # So: total_batches_processed = step * gradient_accumulation_steps
+                            # batches_in_current_epoch = total_batches_processed % batches_per_epoch
+                            total_batches_processed = metadata.step * self.config.gradient_accumulation_steps
+                            batches_in_epoch = total_batches_processed % batches_per_epoch
+                            skip_batches_in_epoch = batches_in_epoch
+                            logger.info(
+                                f"Resumed training from checkpoint: epoch {start_epoch}, step {metadata.step}, "
+                                f"skipping {skip_batches_in_epoch} batches in epoch {start_epoch} "
+                                f"(total batches processed: {total_batches_processed})"
+                            )
+                        else:
+                            logger.info(f"Resumed training from checkpoint at epoch {start_epoch}, step {metadata.step}")
+                    except (TypeError, AttributeError):
+                        logger.info(f"Resumed training from checkpoint at epoch {start_epoch}, step {metadata.step}")
                 except Exception as e:
                     logger.warning(f"Failed to load checkpoint: {e}. Starting from scratch.")
         
@@ -716,9 +738,12 @@ class TrainingController:
         for epoch in range(start_epoch, self.config.num_epochs):
             self.current_epoch = epoch
             
+            # Determine how many batches to skip (only for the first epoch we're resuming)
+            skip_batches = skip_batches_in_epoch if epoch == start_epoch else 0
+            
             # Train for one epoch
             train_metrics = self.train_epoch_with_checkpointing(
-                model, train_dataloader, optimizer, scheduler, epoch
+                model, train_dataloader, optimizer, scheduler, epoch, skip_batches=skip_batches
             )
             
             # Validation
@@ -782,7 +807,7 @@ class TrainingController:
     def train_epoch_with_checkpointing(self, model: AutoModelForCausalLM, 
                                      train_dataloader: DataLoader,
                                      optimizer: AdamW, scheduler: Any, 
-                                     epoch: int) -> Dict[str, float]:
+                                     epoch: int, skip_batches: int = 0) -> Dict[str, float]:
         """
         Train one epoch with integrated checkpoint saving.
         
@@ -792,6 +817,7 @@ class TrainingController:
             optimizer: Optimizer
             scheduler: Learning rate scheduler
             epoch: Current epoch number
+            skip_batches: Number of batches to skip at the start (for checkpoint resumption)
             
         Returns:
             Training metrics for the epoch
@@ -819,14 +845,22 @@ class TrainingController:
         # Track batches to prevent infinite loops with streaming datasets
         batches_processed = 0
         
+        # Log if skipping batches (checkpoint resumption)
+        if skip_batches > 0:
+            logger.info(f"Skipping {skip_batches} batches at the start of epoch {epoch + 1} (checkpoint resumption)")
+        
         # Create progress bar for training (updates per batch)
         if expected_batches is not None:
             pbar = tqdm(total=expected_batches, desc=f"Epoch {epoch + 1}/{self.config.num_epochs}", 
-                       unit="batch", leave=True, ncols=100)
+                       unit="batch", leave=True, ncols=100, initial=skip_batches)
         else:
             pbar = tqdm(desc=f"Epoch {epoch + 1}/{self.config.num_epochs}", unit="batch", leave=True, ncols=100)
         
         for step, batch in enumerate(train_dataloader):
+            # Skip batches if resuming from checkpoint
+            if step < skip_batches:
+                continue
+                
             # Stop if we've processed all expected batches (for streaming datasets)
             if expected_batches is not None and batches_processed >= expected_batches:
                 pbar.close()
