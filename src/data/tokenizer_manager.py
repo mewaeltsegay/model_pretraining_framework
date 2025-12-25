@@ -22,6 +22,13 @@ except ImportError:
     TRANSFORMERS_AVAILABLE = False
     logger.warning("transformers not available, Hugging Face tokenizer loading disabled")
 
+try:
+    from huggingface_hub import hf_hub_download, list_repo_files
+    HF_HUB_AVAILABLE = True
+except ImportError:
+    HF_HUB_AVAILABLE = False
+    logger.warning("huggingface_hub not available, Hugging Face file download disabled")
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,42 +155,200 @@ class TokenizerManager:
         """
         Load tokenizer from Hugging Face Hub.
         
+        Tries to load as a standalone SentencePiece tokenizer first (by downloading files),
+        then falls back to AutoTokenizer if that fails.
+        
         Returns:
-            AutoTokenizer: Loaded Hugging Face tokenizer
+            SentencePieceProcessor or AutoTokenizer: Loaded tokenizer processor
             
         Raises:
-            ImportError: If transformers is not installed
+            ImportError: If required libraries are not installed
             RuntimeError: If tokenizer loading fails
         """
-        if not TRANSFORMERS_AVAILABLE:
+        if not HF_HUB_AVAILABLE:
             raise ImportError(
-                "transformers library is required to load tokenizers from Hugging Face. "
-                "Install with: pip install transformers"
+                "huggingface_hub library is required to load tokenizers from Hugging Face. "
+                "Install with: pip install huggingface_hub"
             )
         
         try:
             logger.info(f"Loading tokenizer from Hugging Face: {self.tokenizer_path_str}")
-            self.hf_tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path_str)
-            self._is_hf_tokenizer = True
             
-            # Load tokenizer config
-            self.tokenizer_config = self.hf_tokenizer.get_vocab() if hasattr(self.hf_tokenizer, 'get_vocab') else {}
+            # First, try to load as standalone SentencePiece tokenizer
+            # Check if sentencepiece.model exists in the repo
+            try:
+                repo_files = list_repo_files(self.tokenizer_path_str, repo_type="model")
+                
+                # Check for SentencePiece files
+                has_sp_model = "sentencepiece.model" in repo_files
+                has_sp_vocab = "sentencepiece.vocab" in repo_files or "sentencepiece.vocab" in [f.lower() for f in repo_files]
+                has_config = "tokenizer_config.json" in repo_files
+                
+                if has_sp_model:
+                    logger.info("Detected SentencePiece tokenizer files, downloading...")
+                    return self._load_sentencepiece_from_hf(repo_files)
+                    
+            except Exception as e:
+                logger.debug(f"Could not list repo files or load SentencePiece: {e}")
+                # Continue to try AutoTokenizer
             
-            # Try to get vocab size
-            vocab_size = getattr(self.hf_tokenizer, 'vocab_size', None)
-            if vocab_size:
-                self.tokenizer_config['vocab_size'] = vocab_size
-            
-            logger.info(f"Successfully loaded tokenizer from Hugging Face: {self.tokenizer_path_str}")
-            if vocab_size:
-                logger.info(f"Tokenizer vocab size: {vocab_size}")
-            
-            self._is_loaded = True
-            return self.hf_tokenizer
+            # Fall back to AutoTokenizer (for model tokenizers)
+            if TRANSFORMERS_AVAILABLE:
+                logger.info("Attempting to load as model tokenizer with AutoTokenizer...")
+                try:
+                    self.hf_tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path_str)
+                    self._is_hf_tokenizer = True
+                    
+                    # Load tokenizer config
+                    self.tokenizer_config = self.hf_tokenizer.get_vocab() if hasattr(self.hf_tokenizer, 'get_vocab') else {}
+                    
+                    # Try to get vocab size
+                    vocab_size = getattr(self.hf_tokenizer, 'vocab_size', None)
+                    if vocab_size:
+                        self.tokenizer_config['vocab_size'] = vocab_size
+                    
+                    logger.info(f"Successfully loaded tokenizer from Hugging Face: {self.tokenizer_path_str}")
+                    if vocab_size:
+                        logger.info(f"Tokenizer vocab size: {vocab_size}")
+                    
+                    self._is_loaded = True
+                    return self.hf_tokenizer
+                except Exception as e2:
+                    logger.error(f"AutoTokenizer also failed: {e2}")
+                    raise RuntimeError(
+                        f"Failed to load tokenizer from Hugging Face. "
+                        f"Tried SentencePiece files and AutoTokenizer, both failed. "
+                        f"Last error: {e2}"
+                    ) from e2
+            else:
+                raise RuntimeError(
+                    "Could not load SentencePiece tokenizer and transformers is not available. "
+                    "Install with: pip install transformers"
+                )
             
         except Exception as e:
             logger.error(f"Failed to load tokenizer from Hugging Face: {e}")
             raise RuntimeError(f"Failed to load tokenizer from Hugging Face: {e}") from e
+    
+    def _load_sentencepiece_from_hf(self, repo_files: list):
+        """
+        Download and load SentencePiece tokenizer files from Hugging Face Hub.
+        
+        Args:
+            repo_files: List of files in the repository
+            
+        Returns:
+            SentencePieceProcessor: Loaded tokenizer processor
+        """
+        import tempfile
+        import shutil
+        
+        # Create temporary directory for downloaded files
+        temp_dir = Path(tempfile.mkdtemp(prefix="hf_tokenizer_"))
+        
+        try:
+            # Download required files
+            model_file = None
+            vocab_file = None
+            config_file = None
+            
+            # Find sentencepiece.model file (case-insensitive)
+            for file in repo_files:
+                if file.lower() == "sentencepiece.model":
+                    model_file = file
+                    break
+                elif file.endswith(".model") and "sentencepiece" in file.lower():
+                    model_file = file
+                    break
+            
+            # Find sentencepiece.vocab file (case-insensitive)
+            for file in repo_files:
+                if file.lower() == "sentencepiece.vocab":
+                    vocab_file = file
+                    break
+                elif file.endswith(".vocab") and "sentencepiece" in file.lower():
+                    vocab_file = file
+                    break
+            
+            # Find tokenizer_config.json
+            if "tokenizer_config.json" in repo_files:
+                config_file = "tokenizer_config.json"
+            
+            if not model_file:
+                raise FileNotFoundError("sentencepiece.model file not found in repository")
+            
+            logger.info(f"Downloading tokenizer files from {self.tokenizer_path_str}...")
+            
+            # Download files
+            local_model_path = hf_hub_download(
+                repo_id=self.tokenizer_path_str,
+                filename=model_file,
+                repo_type="model",
+                cache_dir=str(temp_dir)
+            )
+            
+            if vocab_file:
+                local_vocab_path = hf_hub_download(
+                    repo_id=self.tokenizer_path_str,
+                    filename=vocab_file,
+                    repo_type="model",
+                    cache_dir=str(temp_dir)
+                )
+            else:
+                local_vocab_path = None
+                logger.warning("sentencepiece.vocab file not found, continuing without it")
+            
+            if config_file:
+                local_config_path = hf_hub_download(
+                    repo_id=self.tokenizer_path_str,
+                    filename=config_file,
+                    repo_type="model",
+                    cache_dir=str(temp_dir)
+                )
+            else:
+                local_config_path = None
+                logger.warning("tokenizer_config.json not found, continuing without it")
+            
+            # Load tokenizer configuration if available
+            if local_config_path:
+                try:
+                    with open(local_config_path, 'r', encoding='utf-8') as f:
+                        self.tokenizer_config = json.load(f)
+                    logger.info(f"Loaded tokenizer config: vocab_size={self.tokenizer_config.get('vocab_size')}")
+                except Exception as e:
+                    logger.warning(f"Could not load tokenizer config: {e}")
+                    self.tokenizer_config = {}
+            else:
+                self.tokenizer_config = {}
+            
+            # Initialize and load SentencePiece processor
+            self.sp_processor = smp.SentencePieceProcessor()
+            
+            # Load the SentencePiece model
+            success = self.sp_processor.load(str(local_model_path))
+            if not success:
+                raise RuntimeError("SentencePiece model loading returned False")
+            
+            # Validate loaded model
+            self._validate_tokenizer()
+            
+            self._is_loaded = True
+            logger.info(
+                f"Successfully loaded SentencePiece tokenizer from Hugging Face: {self.tokenizer_path_str}"
+            )
+            logger.info(
+                f"Tokenizer vocab size: {self.sp_processor.get_piece_size()}"
+            )
+            
+            return self.sp_processor
+            
+        finally:
+            # Clean up temporary directory
+            try:
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.warning(f"Could not clean up temporary directory {temp_dir}: {e}")
     
     def _validate_tokenizer(self) -> None:
         """
