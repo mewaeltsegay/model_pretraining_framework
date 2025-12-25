@@ -368,8 +368,11 @@ class DataPipeline:
         """
         Load datasets from Hugging Face Hub.
         
+        For Hugging Face datasets, we download them first and use them locally
+        to avoid streaming complexity and length issues.
+        
         Args:
-            use_streaming: Whether to use streaming datasets for memory efficiency
+            use_streaming: Ignored for Hugging Face datasets (always downloads)
             
         Returns:
             Dictionary containing loaded datasets
@@ -378,13 +381,12 @@ class DataPipeline:
             RuntimeError: If dataset loading fails
         """
         try:
-            logger.info(f"Loading dataset from Hugging Face: {self.data_dir_str}")
+            logger.info(f"Downloading dataset from Hugging Face: {self.data_dir_str}")
+            logger.info("  → Dataset will be downloaded and cached locally")
             
-            # Load dataset from Hugging Face Hub
-            if use_streaming:
-                hf_dataset = load_dataset(self.data_dir_str, streaming=True)
-            else:
-                hf_dataset = load_dataset(self.data_dir_str, streaming=False)
+            # Always download Hugging Face datasets (don't use streaming)
+            # This avoids length issues and works more reliably
+            hf_dataset = load_dataset(self.data_dir_str, streaming=False)
             
             datasets = {}
             
@@ -409,47 +411,29 @@ class DataPipeline:
                         elif target_name == 'test' and self.max_test_samples:
                             max_samples = self.max_test_samples
                         
-                        if max_samples and not use_streaming:
+                        if max_samples:
                             split_dataset = split_dataset.select(range(min(max_samples, len(split_dataset))))
                             logger.info(f"  → Limited to {max_samples} samples")
                         
-                        # Try to get dataset info for length
-                        dataset_info = None
-                        try:
-                            if hasattr(split_dataset, 'info') and hasattr(split_dataset.info, 'num_rows'):
-                                dataset_info = split_dataset.info.num_rows
-                            elif hasattr(split_dataset, 'num_rows'):
-                                dataset_info = split_dataset.num_rows
-                        except Exception:
-                            pass
-                        
-                        # Convert to our tokenized format
+                        # Convert to our tokenized format (always non-streaming for HF datasets)
                         datasets[target_name] = self._convert_hf_dataset(
                             split_dataset, 
-                            use_streaming=use_streaming,
-                            max_samples=max_samples if use_streaming else None,
-                            dataset_length=dataset_info
+                            use_streaming=False,  # Always use non-streaming for downloaded datasets
+                            max_samples=None  # Already applied above if needed
                         )
             else:
                 # Single split, assume it's training data
                 logger.info("Loading single split from Hugging Face (assuming train)...")
-                max_samples = self.max_train_samples if use_streaming else None
                 
-                # Try to get dataset info for length
-                dataset_info = None
-                try:
-                    if hasattr(hf_dataset, 'info') and hasattr(hf_dataset.info, 'num_rows'):
-                        dataset_info = hf_dataset.info.num_rows
-                    elif hasattr(hf_dataset, 'num_rows'):
-                        dataset_info = hf_dataset.num_rows
-                except Exception:
-                    pass
+                if self.max_train_samples:
+                    hf_dataset = hf_dataset.select(range(min(self.max_train_samples, len(hf_dataset))))
+                    logger.info(f"  → Limited to {self.max_train_samples} samples")
                 
+                # Convert to our tokenized format (always non-streaming for HF datasets)
                 datasets['train'] = self._convert_hf_dataset(
                     hf_dataset, 
-                    use_streaming=use_streaming,
-                    max_samples=max_samples,
-                    dataset_length=dataset_info
+                    use_streaming=False,  # Always use non-streaming for downloaded datasets
+                    max_samples=None  # Already applied above if needed
                 )
             
             logger.info(f"Successfully loaded {len(datasets)} dataset(s) from Hugging Face")
