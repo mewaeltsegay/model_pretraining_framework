@@ -111,10 +111,20 @@ class ModelManager:
             try:
                 logger.info(f"Attempting to load model: {attempt_model}")
                 
-                # Record initial GPU memory
+                # Record initial GPU memory (with error handling)
                 if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    self._initial_memory = torch.cuda.memory_allocated()
+                    try:
+                        torch.cuda.empty_cache()
+                        self._initial_memory = torch.cuda.memory_allocated()
+                    except RuntimeError as e:
+                        if "busy" in str(e).lower() or "unavailable" in str(e).lower():
+                            logger.warning(
+                                f"CUDA device busy during model loading initialization: {e}. "
+                                f"Continuing without memory tracking."
+                            )
+                            self._initial_memory = 0
+                        else:
+                            raise
                 
                 # Load model configuration first to validate
                 model_config = AutoConfig.from_pretrained(attempt_model, trust_remote_code=True)
@@ -152,8 +162,25 @@ class ModelManager:
                 # Configure for pretraining
                 self.configure_for_pretraining()
                 
-                # Apply memory optimizations
-                self.optimize_for_memory()
+                # Apply memory optimizations (with error handling for CUDA issues)
+                try:
+                    self.optimize_for_memory()
+                except RuntimeError as e:
+                    if "busy" in str(e).lower() or "unavailable" in str(e).lower():
+                        logger.warning(
+                            f"CUDA device is busy during memory optimization: {e}. "
+                            f"Continuing without full optimization. "
+                            f"This may be due to another process using the GPU."
+                        )
+                        # Try to at least clear cache without synchronization
+                        try:
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    else:
+                        # Re-raise if it's a different error
+                        raise
                 
                 return self.model
                 
@@ -276,11 +303,17 @@ class ModelManager:
     
     def _apply_additional_optimizations(self) -> None:
         """Apply additional memory optimization techniques."""
-        # Clear any cached computations
+        # Clear any cached computations (with error handling)
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except RuntimeError as e:
+                if "busy" in str(e).lower() or "unavailable" in str(e).lower():
+                    logger.debug(f"CUDA cache clear skipped (device busy): {e}")
+                else:
+                    logger.warning(f"Failed to clear CUDA cache: {e}")
         
-        # Force garbage collection
+        # Force garbage collection (always safe)
         gc.collect()
     
     def validate_model_compatibility(self, tokenizer_vocab_size: int) -> bool:
