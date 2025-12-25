@@ -217,14 +217,9 @@ class MemoryOptimizer:
         """
         optimizations = {}
         
-        # Clear cache first (with error handling)
-        try:
-            self.clear_memory_cache()
-            optimizations['cache_cleared'] = True
-        except Exception as e:
-            logger.warning(f"Failed to clear memory cache during optimization: {e}")
-            optimizations['cache_cleared'] = False
-            optimizations['cache_error'] = str(e)
+        # Clear cache first
+        self.clear_memory_cache()
+        optimizations['cache_cleared'] = True
         
         # Check current memory state
         within_limits, message, suggestions = self.check_memory_constraints()
@@ -314,39 +309,11 @@ class MemoryOptimizer:
         return new_batch_size
     
     def clear_memory_cache(self) -> None:
-        """
-        Clear GPU memory cache and run garbage collection.
-        
-        Handles CUDA errors gracefully, especially when GPU is busy or unavailable.
-        """
+        """Clear GPU memory cache and run garbage collection."""
         if torch.cuda.is_available():
-            try:
-                # Try to clear cache - this is usually safe
-                torch.cuda.empty_cache()
-            except RuntimeError as e:
-                if "busy" in str(e).lower() or "unavailable" in str(e).lower():
-                    logger.warning(
-                        f"CUDA device is busy or unavailable. Skipping cache clear. "
-                        f"Error: {e}. This may be due to another process using the GPU."
-                    )
-                else:
-                    logger.warning(f"Failed to clear CUDA cache: {e}")
-            
-            # Synchronize is more likely to fail if GPU is busy, so wrap it carefully
-            try:
-                # Only synchronize if we can actually access the device
-                if torch.cuda.device_count() > 0:
-                    torch.cuda.synchronize()
-            except RuntimeError as e:
-                if "busy" in str(e).lower() or "unavailable" in str(e).lower():
-                    logger.debug(
-                        f"CUDA synchronization skipped (device busy): {e}. "
-                        f"This is usually safe to ignore during initialization."
-                    )
-                else:
-                    logger.warning(f"CUDA synchronization failed: {e}")
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
         
-        # Always run garbage collection (CPU-side)
         gc.collect()
     
     def get_memory_report(self) -> Dict[str, Any]:

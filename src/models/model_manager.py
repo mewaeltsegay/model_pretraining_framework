@@ -111,20 +111,10 @@ class ModelManager:
             try:
                 logger.info(f"Attempting to load model: {attempt_model}")
                 
-                # Record initial GPU memory (with error handling)
+                # Record initial GPU memory
                 if torch.cuda.is_available():
-                    try:
-                        torch.cuda.empty_cache()
-                        self._initial_memory = torch.cuda.memory_allocated()
-                    except RuntimeError as e:
-                        if "busy" in str(e).lower() or "unavailable" in str(e).lower():
-                            logger.warning(
-                                f"CUDA device busy during model loading initialization: {e}. "
-                                f"Continuing without memory tracking."
-                            )
-                            self._initial_memory = 0
-                        else:
-                            raise
+                    torch.cuda.empty_cache()
+                    self._initial_memory = torch.cuda.memory_allocated()
                 
                 # Load model configuration first to validate
                 model_config = AutoConfig.from_pretrained(attempt_model, trust_remote_code=True)
@@ -137,46 +127,17 @@ class ModelManager:
                     # Only use FP16 loading if not using mixed precision training
                     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
                 
-                # Try to load with device_map, but fallback to manual device placement if it fails
-                try:
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        attempt_model,
-                        config=model_config,
-                        torch_dtype=torch_dtype,
-                        device_map="auto" if torch.cuda.is_available() else None,
-                        trust_remote_code=True,  # Required for Qwen models
-                        low_cpu_mem_usage=True,  # Optimize CPU memory usage during loading
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to load with device_map='auto': {e}. Loading without device_map...")
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        attempt_model,
-                        config=model_config,
-                        torch_dtype=torch_dtype,
-                        device_map=None,  # Disable device_map
-                        trust_remote_code=True,
-                        low_cpu_mem_usage=True,
-                    )
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    attempt_model,
+                    config=model_config,
+                    torch_dtype=torch_dtype,
+                    device_map="auto" if torch.cuda.is_available() else None,
+                    trust_remote_code=True,  # Required for Qwen models
+                    low_cpu_mem_usage=True,  # Optimize CPU memory usage during loading
+                )
                 
-                # Ensure model is on the correct device
-                # Check if model is actually on GPU (device_map might have failed)
-                model_device = next(self.model.parameters()).device
-                if torch.cuda.is_available() and model_device.type != 'cuda':
-                    logger.info(f"Model is on {model_device}, moving to {self.device}...")
-                    try:
-                        self.model = self.model.to(self.device)
-                        logger.info(f"Model moved to {self.device}")
-                    except RuntimeError as e:
-                        if "busy" in str(e).lower() or "unavailable" in str(e).lower():
-                            logger.error(
-                                f"Cannot move model to GPU: CUDA device is busy or unavailable. "
-                                f"Error: {e}. Please check if another process is using the GPU."
-                            )
-                            raise
-                        else:
-                            raise
-                elif not torch.cuda.is_available():
-                    # CPU fallback
+                # Move to device if not using device_map
+                if not torch.cuda.is_available() or not hasattr(self.model, 'hf_device_map'):
                     self.model = self.model.to(self.device)
                 
                 # Record model memory usage
@@ -191,25 +152,8 @@ class ModelManager:
                 # Configure for pretraining
                 self.configure_for_pretraining()
                 
-                # Apply memory optimizations (with error handling for CUDA issues)
-                try:
-                    self.optimize_for_memory()
-                except RuntimeError as e:
-                    if "busy" in str(e).lower() or "unavailable" in str(e).lower():
-                        logger.warning(
-                            f"CUDA device is busy during memory optimization: {e}. "
-                            f"Continuing without full optimization. "
-                            f"This may be due to another process using the GPU."
-                        )
-                        # Try to at least clear cache without synchronization
-                        try:
-                            if torch.cuda.is_available():
-                                torch.cuda.empty_cache()
-                        except Exception:
-                            pass
-                    else:
-                        # Re-raise if it's a different error
-                        raise
+                # Apply memory optimizations
+                self.optimize_for_memory()
                 
                 return self.model
                 
@@ -332,17 +276,11 @@ class ModelManager:
     
     def _apply_additional_optimizations(self) -> None:
         """Apply additional memory optimization techniques."""
-        # Clear any cached computations (with error handling)
+        # Clear any cached computations
         if torch.cuda.is_available():
-            try:
-                torch.cuda.empty_cache()
-            except RuntimeError as e:
-                if "busy" in str(e).lower() or "unavailable" in str(e).lower():
-                    logger.debug(f"CUDA cache clear skipped (device busy): {e}")
-                else:
-                    logger.warning(f"Failed to clear CUDA cache: {e}")
+            torch.cuda.empty_cache()
         
-        # Force garbage collection (always safe)
+        # Force garbage collection
         gc.collect()
     
     def validate_model_compatibility(self, tokenizer_vocab_size: int) -> bool:
