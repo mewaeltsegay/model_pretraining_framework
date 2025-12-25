@@ -5,8 +5,32 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 import os
 import json
+import logging
 import torch
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+def _is_huggingface_repo(path: str) -> bool:
+    """
+    Check if a path is a Hugging Face repository ID.
+    
+    Args:
+        path: Path to check
+        
+    Returns:
+        True if it appears to be a Hugging Face repository ID
+    """
+    # HF repos typically have format "username/repo-name" and don't exist as local paths
+    return (
+        "/" in path and 
+        not Path(path).exists() and
+        not path.startswith("./") and
+        not path.startswith("../") and
+        not os.path.isabs(path) and
+        len(path.split("/")) == 2  # username/repo-name format
+    )
 
 
 @dataclass
@@ -73,27 +97,37 @@ class TrainingConfig:
     
     def _validate_paths(self) -> None:
         """Validate file and directory paths."""
-        # Check tokenizer path exists
-        tokenizer_path = Path(self.tokenizer_path)
-        if not tokenizer_path.exists():
-            raise ValueError(f"Tokenizer path does not exist: {self.tokenizer_path}")
+        # Check if tokenizer path is a Hugging Face repository
+        if _is_huggingface_repo(self.tokenizer_path):
+            # Skip local file validation for Hugging Face repositories
+            logger.info(f"Tokenizer path detected as Hugging Face repository: {self.tokenizer_path}")
+        else:
+            # Validate local tokenizer path
+            tokenizer_path = Path(self.tokenizer_path)
+            if not tokenizer_path.exists():
+                raise ValueError(f"Tokenizer path does not exist: {self.tokenizer_path}")
+            
+            # Check required tokenizer files
+            required_files = ["tokenizer_config.json", "sentencepiece.model"]
+            for file_name in required_files:
+                file_path = tokenizer_path / file_name
+                if not file_path.exists():
+                    raise ValueError(f"Required tokenizer file missing: {file_path}")
         
-        # Check required tokenizer files
-        required_files = ["tokenizer_config.json", "sentencepiece.model"]
-        for file_name in required_files:
-            file_path = tokenizer_path / file_name
-            if not file_path.exists():
-                raise ValueError(f"Required tokenizer file missing: {file_path}")
-        
-        # Check data directory exists
-        data_path = Path(self.data_dir)
-        if not data_path.exists():
-            raise ValueError(f"Data directory does not exist: {self.data_dir}")
-        
-        # Check for at least train.jsonl
-        train_file = data_path / "train.jsonl"
-        if not train_file.exists():
-            raise ValueError(f"Training data file missing: {train_file}")
+        # Check if data directory is a Hugging Face repository
+        if _is_huggingface_repo(self.data_dir):
+            # Skip local file validation for Hugging Face repositories
+            logger.info(f"Data directory detected as Hugging Face repository: {self.data_dir}")
+        else:
+            # Validate local data directory
+            data_path = Path(self.data_dir)
+            if not data_path.exists():
+                raise ValueError(f"Data directory does not exist: {self.data_dir}")
+            
+            # Check for at least train.jsonl
+            train_file = data_path / "train.jsonl"
+            if not train_file.exists():
+                raise ValueError(f"Training data file missing: {train_file}")
         
         # Create output directory if it doesn't exist
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)

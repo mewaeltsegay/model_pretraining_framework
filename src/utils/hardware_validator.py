@@ -8,6 +8,7 @@ system checks with warnings.
 
 import logging
 import platform
+import os
 import psutil
 from typing import Dict, Any, List, Tuple, Optional
 from dataclasses import dataclass
@@ -19,6 +20,27 @@ import numpy as np
 from ..config import TrainingConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _is_huggingface_repo(path: str) -> bool:
+    """
+    Check if a path is a Hugging Face repository ID.
+    
+    Args:
+        path: Path to check
+        
+    Returns:
+        True if it appears to be a Hugging Face repository ID
+    """
+    # HF repos typically have format "username/repo-name" and don't exist as local paths
+    return (
+        "/" in path and 
+        not Path(path).exists() and
+        not path.startswith("./") and
+        not path.startswith("../") and
+        not os.path.isabs(path) and
+        len(path.split("/")) == 2  # username/repo-name format
+    )
 
 
 @dataclass
@@ -249,12 +271,18 @@ class HardwareValidator:
         elif config.save_steps > 5000:
             warnings.append("Infrequent checkpoints increase risk of losing progress")
         
-        # Check file paths
-        if not Path(config.tokenizer_path).exists():
-            errors.append(f"Tokenizer path does not exist: {config.tokenizer_path}")
+        # Check file paths (skip validation for Hugging Face repositories)
+        if not _is_huggingface_repo(config.tokenizer_path):
+            if not Path(config.tokenizer_path).exists():
+                errors.append(f"Tokenizer path does not exist: {config.tokenizer_path}")
+        else:
+            logger.info(f"Tokenizer path detected as Hugging Face repository: {config.tokenizer_path}")
         
-        if not Path(config.data_dir).exists():
-            errors.append(f"Data directory does not exist: {config.data_dir}")
+        if not _is_huggingface_repo(config.data_dir):
+            if not Path(config.data_dir).exists():
+                errors.append(f"Data directory does not exist: {config.data_dir}")
+        else:
+            logger.info(f"Data directory detected as Hugging Face repository: {config.data_dir}")
         
         is_valid = len(errors) == 0
         
