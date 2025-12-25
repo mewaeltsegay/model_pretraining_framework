@@ -246,6 +246,12 @@ class DataPipeline:
             self.test_file = self.data_dir / "test.jsonl"
             # Validate data directory
             self._validate_data_directory()
+        else:
+            # Set dummy paths for Hugging Face datasets (to avoid AttributeError)
+            # These won't be used, but prevent errors in methods that check them
+            self.train_file = Path("/dummy/train.jsonl")
+            self.validation_file = Path("/dummy/validation.jsonl")
+            self.test_file = Path("/dummy/test.jsonl")
         
         logger.info(f"Initialized DataPipeline with data_dir: {self.data_dir_str}")
         if self._is_hf_dataset:
@@ -675,6 +681,16 @@ class DataPipeline:
         """
         info = {}
         
+        # For Hugging Face datasets, return info about the repository
+        if self._is_hf_dataset:
+            info['source'] = {
+                'type': 'huggingface',
+                'repo_id': self.data_dir_str,
+                'exists': True
+            }
+            return info
+        
+        # For local datasets, check file paths
         for file_path, name in [
             (self.train_file, "train"),
             (self.validation_file, "validation"),
@@ -714,6 +730,21 @@ class DataPipeline:
         """
         validation_results = {}
         
+        # For Hugging Face datasets, validation happens during loading
+        if self._is_hf_dataset:
+            logger.info("Skipping file-based validation for Hugging Face dataset")
+            # Try to load datasets to validate
+            try:
+                datasets = self.load_datasets(use_streaming=True)
+                for split_name in datasets.keys():
+                    validation_results[split_name] = True
+                    logger.info(f"Dataset {split_name} validation passed (loaded from Hugging Face)")
+            except Exception as e:
+                logger.error(f"Dataset validation failed: {e}")
+                validation_results['train'] = False
+            return validation_results
+        
+        # For local datasets, validate by checking files
         for file_path, name in [
             (self.train_file, "train"),
             (self.validation_file, "validation"),
