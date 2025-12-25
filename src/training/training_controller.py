@@ -124,7 +124,23 @@ class TrainingController:
         logger.info("Setting up optimizer and scheduler...")
         
         # Calculate total training steps
-        total_steps = len(train_dataloader) * self.config.num_epochs // self.config.gradient_accumulation_steps
+        # Handle streaming datasets that don't have a length
+        try:
+            dataloader_len = len(train_dataloader)
+            total_steps = dataloader_len * self.config.num_epochs // self.config.gradient_accumulation_steps
+            logger.info(f"Dataset length: {dataloader_len}, total steps: {total_steps}")
+        except (TypeError, AttributeError) as e:
+            # For streaming datasets without known length, estimate based on a reasonable default
+            # or use a large number and let the scheduler handle it
+            logger.warning(
+                f"Cannot determine dataset length ({e}). "
+                f"Using estimated total steps based on warmup_steps."
+            )
+            # Estimate: assume we'll train for at least warmup_steps * 10
+            # This is a reasonable default that ensures the scheduler works
+            estimated_steps_per_epoch = max(self.config.warmup_steps * 2, 1000)
+            total_steps = estimated_steps_per_epoch * self.config.num_epochs // self.config.gradient_accumulation_steps
+            logger.info(f"Estimated total steps: {total_steps} (may be adjusted during training)")
         
         # Set up optimizer with weight decay
         no_decay = ["bias", "LayerNorm.weight"]

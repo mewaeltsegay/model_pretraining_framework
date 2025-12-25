@@ -413,20 +413,43 @@ class DataPipeline:
                             split_dataset = split_dataset.select(range(min(max_samples, len(split_dataset))))
                             logger.info(f"  → Limited to {max_samples} samples")
                         
+                        # Try to get dataset info for length
+                        dataset_info = None
+                        try:
+                            if hasattr(split_dataset, 'info') and hasattr(split_dataset.info, 'num_rows'):
+                                dataset_info = split_dataset.info.num_rows
+                            elif hasattr(split_dataset, 'num_rows'):
+                                dataset_info = split_dataset.num_rows
+                        except Exception:
+                            pass
+                        
                         # Convert to our tokenized format
                         datasets[target_name] = self._convert_hf_dataset(
                             split_dataset, 
                             use_streaming=use_streaming,
-                            max_samples=max_samples if use_streaming else None
+                            max_samples=max_samples if use_streaming else None,
+                            dataset_length=dataset_info
                         )
             else:
                 # Single split, assume it's training data
                 logger.info("Loading single split from Hugging Face (assuming train)...")
                 max_samples = self.max_train_samples if use_streaming else None
+                
+                # Try to get dataset info for length
+                dataset_info = None
+                try:
+                    if hasattr(hf_dataset, 'info') and hasattr(hf_dataset.info, 'num_rows'):
+                        dataset_info = hf_dataset.info.num_rows
+                    elif hasattr(hf_dataset, 'num_rows'):
+                        dataset_info = hf_dataset.num_rows
+                except Exception:
+                    pass
+                
                 datasets['train'] = self._convert_hf_dataset(
                     hf_dataset, 
                     use_streaming=use_streaming,
-                    max_samples=max_samples
+                    max_samples=max_samples,
+                    dataset_length=dataset_info
                 )
             
             logger.info(f"Successfully loaded {len(datasets)} dataset(s) from Hugging Face")
@@ -440,7 +463,8 @@ class DataPipeline:
         self, 
         hf_dataset: Union[HFDataset, Any], 
         use_streaming: bool = True,
-        max_samples: Optional[int] = None
+        max_samples: Optional[int] = None,
+        dataset_length: Optional[int] = None
     ) -> Union[Dataset, IterableDataset]:
         """
         Convert Hugging Face dataset to our tokenized format.
@@ -456,14 +480,53 @@ class DataPipeline:
         if use_streaming:
             # For streaming, create an iterable dataset wrapper
             class HFStreamingDataset(IterableDataset):
-                def __init__(self, hf_dataset, tokenizer_manager, max_length, max_samples):
+                def __init__(self, hf_dataset, tokenizer_manager, max_length, max_samples, dataset_length=None):
                     self.hf_dataset = hf_dataset
                     self.tokenizer_manager = tokenizer_manager
                     self.max_length = max_length
                     self.max_samples = max_samples
                     self._count = 0
+                    
+                    # Try to get length from the underlying dataset
+                    # For streaming datasets, this might not be available
+                    self._length = dataset_length  # Use provided length if available
+                    
+                    if self._length is None:
+                        try:
+                            # Some Hugging Face datasets have info.num_rows even in streaming mode
+                            if hasattr(hf_dataset, 'info') and hasattr(hf_dataset.info, 'num_rows'):
+                                self._length = hf_dataset.info.num_rows
+                            elif hasattr(hf_dataset, 'num_rows'):
+                                self._length = hf_dataset.num_rows
+                            elif hasattr(hf_dataset, '__len__'):
+                                # Try to get length directly (might not work for streaming)
+                                try:
+                                    self._length = len(hf_dataset)
+                                except (TypeError, NotImplementedError):
+                                    pass
+                        except Exception:
+                            pass
+                    
+                    # If max_samples is set, use that as length (override if smaller)
+                    if max_samples:
+                        if self._length is None:
+                            self._length = max_samples
+                        else:
+                            self._length = min(self._length, max_samples)
+                
+                def __len__(self):
+                    """Return dataset length if available, otherwise raise TypeError."""
+                    if self._length is not None:
+                        return self._length
+                    # For streaming datasets without known length, raise TypeError
+                    # This is the standard behavior for IterableDataset
+                    raise TypeError(
+                        "Cannot determine length of streaming dataset. "
+                        "Consider using use_streaming=False or setting max_samples."
+                    )
                 
                 def __iter__(self):
+                    self._count = 0  # Reset count for each iteration
                     for item in self.hf_dataset:
                         if self.max_samples and self._count >= self.max_samples:
                             break
@@ -494,7 +557,8 @@ class DataPipeline:
                 hf_dataset, 
                 self.tokenizer_manager, 
                 self.max_sequence_length,
-                max_samples
+                max_samples,
+                dataset_length=dataset_length
             )
         else:
             # For non-streaming, create a regular dataset
