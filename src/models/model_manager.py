@@ -137,17 +137,46 @@ class ModelManager:
                     # Only use FP16 loading if not using mixed precision training
                     torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
                 
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    attempt_model,
-                    config=model_config,
-                    torch_dtype=torch_dtype,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    trust_remote_code=True,  # Required for Qwen models
-                    low_cpu_mem_usage=True,  # Optimize CPU memory usage during loading
-                )
+                # Try to load with device_map, but fallback to manual device placement if it fails
+                try:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        attempt_model,
+                        config=model_config,
+                        torch_dtype=torch_dtype,
+                        device_map="auto" if torch.cuda.is_available() else None,
+                        trust_remote_code=True,  # Required for Qwen models
+                        low_cpu_mem_usage=True,  # Optimize CPU memory usage during loading
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to load with device_map='auto': {e}. Loading without device_map...")
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        attempt_model,
+                        config=model_config,
+                        torch_dtype=torch_dtype,
+                        device_map=None,  # Disable device_map
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True,
+                    )
                 
-                # Move to device if not using device_map
-                if not torch.cuda.is_available() or not hasattr(self.model, 'hf_device_map'):
+                # Ensure model is on the correct device
+                # Check if model is actually on GPU (device_map might have failed)
+                model_device = next(self.model.parameters()).device
+                if torch.cuda.is_available() and model_device.type != 'cuda':
+                    logger.info(f"Model is on {model_device}, moving to {self.device}...")
+                    try:
+                        self.model = self.model.to(self.device)
+                        logger.info(f"Model moved to {self.device}")
+                    except RuntimeError as e:
+                        if "busy" in str(e).lower() or "unavailable" in str(e).lower():
+                            logger.error(
+                                f"Cannot move model to GPU: CUDA device is busy or unavailable. "
+                                f"Error: {e}. Please check if another process is using the GPU."
+                            )
+                            raise
+                        else:
+                            raise
+                elif not torch.cuda.is_available():
+                    # CPU fallback
                     self.model = self.model.to(self.device)
                 
                 # Record model memory usage

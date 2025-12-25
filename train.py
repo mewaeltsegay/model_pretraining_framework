@@ -258,6 +258,27 @@ class TrainingOrchestrator:
             # Create data loaders
             self.dataloaders = {}
             
+            # Check if CUDA is actually usable (not just available)
+            def is_cuda_usable():
+                """Check if CUDA is actually usable, not just available."""
+                if not torch.cuda.is_available():
+                    return False
+                try:
+                    # Try a simple CUDA operation to verify it's not busy
+                    test_tensor = torch.tensor([1.0]).cuda()
+                    del test_tensor
+                    torch.cuda.empty_cache()
+                    return True
+                except RuntimeError as e:
+                    if "busy" in str(e).lower() or "unavailable" in str(e).lower():
+                        logger.warning(f"CUDA is available but not usable (device busy): {e}")
+                        return False
+                    return False
+            
+            use_pin_memory = is_cuda_usable()
+            if not use_pin_memory and torch.cuda.is_available():
+                logger.warning("CUDA is available but not usable. Disabling pin_memory in DataLoader.")
+            
             # Training dataloader
             if 'train' in self.datasets:
                 self.dataloaders['train'] = DataLoader(
@@ -265,9 +286,9 @@ class TrainingOrchestrator:
                     batch_size=self.config.batch_size,
                     collate_fn=collator,
                     num_workers=self.config.dataloader_num_workers,
-                    pin_memory=True if torch.cuda.is_available() else False
+                    pin_memory=use_pin_memory
                 )
-                logger.info(f"Training dataloader created with batch_size={self.config.batch_size}")
+                logger.info(f"Training dataloader created with batch_size={self.config.batch_size}, pin_memory={use_pin_memory}")
             
             # Validation dataloader
             if 'validation' in self.datasets:
@@ -276,9 +297,9 @@ class TrainingOrchestrator:
                     batch_size=self.config.batch_size,
                     collate_fn=collator,
                     num_workers=self.config.dataloader_num_workers,
-                    pin_memory=True if torch.cuda.is_available() else False
+                    pin_memory=use_pin_memory
                 )
-                logger.info("Validation dataloader created")
+                logger.info(f"Validation dataloader created with pin_memory={use_pin_memory}")
             
             # Test dataloader (if needed)
             if 'test' in self.datasets:
@@ -287,9 +308,9 @@ class TrainingOrchestrator:
                     batch_size=self.config.batch_size,
                     collate_fn=collator,
                     num_workers=self.config.dataloader_num_workers,
-                    pin_memory=True if torch.cuda.is_available() else False
+                    pin_memory=use_pin_memory
                 )
-                logger.info("Test dataloader created")
+                logger.info(f"Test dataloader created with pin_memory={use_pin_memory}")
             
         except Exception as e:
             logger.error(f"Dataset preparation failed: {e}")
