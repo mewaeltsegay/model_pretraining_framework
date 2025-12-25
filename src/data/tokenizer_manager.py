@@ -2,7 +2,8 @@
 TokenizerManager for handling SentencePiece tokenization in the Qwen pretraining pipeline.
 
 This module provides a unified interface for loading and using the custom SentencePiece
-tokenizer with proper error handling and validation.
+tokenizer with proper error handling and validation. Supports both local files and
+Hugging Face Hub repositories.
 """
 
 import os
@@ -13,6 +14,13 @@ from pathlib import Path
 
 import torch
 import sentencepiece as smp
+
+try:
+    from transformers import AutoTokenizer
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    logger.warning("transformers not available, Hugging Face tokenizer loading disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -31,30 +39,50 @@ class TokenizerManager:
         Initialize the TokenizerManager.
         
         Args:
-            tokenizer_path: Path to the directory containing tokenizer files
+            tokenizer_path: Path to the directory containing tokenizer files, 
+                          or Hugging Face repository ID (e.g., "username/tokenizer-name")
         """
+        self.tokenizer_path_str = tokenizer_path
         self.tokenizer_path = Path(tokenizer_path)
         self.sp_processor = None
+        self.hf_tokenizer = None  # For Hugging Face tokenizers
         self.tokenizer_config = None
         self._is_loaded = False
+        self._is_hf_tokenizer = False
         
-        # Expected tokenizer files
-        self.config_file = self.tokenizer_path / "tokenizer_config.json"
-        self.model_file = self.tokenizer_path / "sentencepiece.model"
-        self.vocab_file = self.tokenizer_path / "sentencepiece.vocab"
+        # Check if this is a Hugging Face repository ID
+        # HF repos typically have format "username/repo-name" and don't exist as local paths
+        self._is_hf_repo = (
+            "/" in tokenizer_path and 
+            not self.tokenizer_path.exists() and
+            not tokenizer_path.startswith("./") and
+            not tokenizer_path.startswith("../") and
+            not os.path.isabs(tokenizer_path)
+        )
         
-    def load_sentencepiece_tokenizer(self) -> smp.SentencePieceProcessor:
+        # Expected tokenizer files (only used for local paths)
+        if not self._is_hf_repo:
+            self.config_file = self.tokenizer_path / "tokenizer_config.json"
+            self.model_file = self.tokenizer_path / "sentencepiece.model"
+            self.vocab_file = self.tokenizer_path / "sentencepiece.vocab"
+        
+    def load_sentencepiece_tokenizer(self) -> Union[smp.SentencePieceProcessor, Any]:
         """
-        Load the SentencePiece tokenizer from local files.
+        Load the SentencePiece tokenizer from local files or Hugging Face Hub.
         
         Returns:
-            SentencePieceProcessor: Loaded tokenizer processor
+            SentencePieceProcessor or AutoTokenizer: Loaded tokenizer processor
             
         Raises:
             FileNotFoundError: If required tokenizer files are missing
             ValueError: If tokenizer files are corrupted or invalid
             RuntimeError: If tokenizer loading fails
         """
+        # Load from Hugging Face if it's a repository ID
+        if self._is_hf_repo:
+            return self._load_from_huggingface()
+        
+        # Otherwise load from local files
         try:
             # Validate tokenizer directory exists
             if not self.tokenizer_path.exists():
@@ -115,6 +143,47 @@ class TokenizerManager:
         except Exception as e:
             logger.error(f"TokenizerManager initialization failed: {e}")
             raise
+    
+    def _load_from_huggingface(self):
+        """
+        Load tokenizer from Hugging Face Hub.
+        
+        Returns:
+            AutoTokenizer: Loaded Hugging Face tokenizer
+            
+        Raises:
+            ImportError: If transformers is not installed
+            RuntimeError: If tokenizer loading fails
+        """
+        if not TRANSFORMERS_AVAILABLE:
+            raise ImportError(
+                "transformers library is required to load tokenizers from Hugging Face. "
+                "Install with: pip install transformers"
+            )
+        
+        try:
+            logger.info(f"Loading tokenizer from Hugging Face: {self.tokenizer_path_str}")
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path_str)
+            self._is_hf_tokenizer = True
+            
+            # Load tokenizer config
+            self.tokenizer_config = self.hf_tokenizer.get_vocab() if hasattr(self.hf_tokenizer, 'get_vocab') else {}
+            
+            # Try to get vocab size
+            vocab_size = getattr(self.hf_tokenizer, 'vocab_size', None)
+            if vocab_size:
+                self.tokenizer_config['vocab_size'] = vocab_size
+            
+            logger.info(f"Successfully loaded tokenizer from Hugging Face: {self.tokenizer_path_str}")
+            if vocab_size:
+                logger.info(f"Tokenizer vocab size: {vocab_size}")
+            
+            self._is_loaded = True
+            return self.hf_tokenizer
+            
+        except Exception as e:
+            logger.error(f"Failed to load tokenizer from Hugging Face: {e}")
+            raise RuntimeError(f"Failed to load tokenizer from Hugging Face: {e}") from e
     
     def _validate_tokenizer(self) -> None:
         """
@@ -186,7 +255,17 @@ class TokenizerManager:
             RuntimeError: If tokenizer is not loaded
             ValueError: If input parameters are invalid
         """
-        if not self._is_loaded or not self.sp_processor:
+        if not self._is_loaded:
+            raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
+        
+        # Use Hugging Face tokenizer if available
+        if self._is_hf_tokenizer and self.hf_tokenizer:
+            return self._tokenize_batch_hf(
+                texts, max_length, padding, truncation, return_tensors, add_special_tokens
+            )
+        
+        # Otherwise use SentencePiece processor
+        if not self.sp_processor:
             raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
         
         if not texts:
@@ -277,6 +356,30 @@ class TokenizerManager:
             logger.error(f"Batch tokenization failed: {e}")
             raise RuntimeError(f"Tokenization failed: {e}")
     
+    def _tokenize_batch_hf(
+        self,
+        texts: List[str],
+        max_length: Optional[int],
+        padding: Union[bool, str],
+        truncation: bool,
+        return_tensors: str,
+        add_special_tokens: bool
+    ) -> Dict[str, torch.Tensor]:
+        """Tokenize batch using Hugging Face tokenizer."""
+        try:
+            encoded = self.hf_tokenizer(
+                texts,
+                max_length=max_length,
+                padding=padding,
+                truncation=truncation,
+                return_tensors=return_tensors,
+                add_special_tokens=add_special_tokens
+            )
+            return encoded
+        except Exception as e:
+            logger.error(f"Hugging Face tokenization failed: {e}")
+            raise RuntimeError(f"Tokenization failed: {e}") from e
+    
     def get_tokenizer_config(self) -> Dict[str, Any]:
         """
         Get the tokenizer configuration.
@@ -321,7 +424,26 @@ class TokenizerManager:
             RuntimeError: If tokenizer is not loaded
             ValueError: If input format is invalid
         """
-        if not self._is_loaded or not self.sp_processor:
+        if not self._is_loaded:
+            raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
+        
+        # Use Hugging Face tokenizer if available
+        if self._is_hf_tokenizer and self.hf_tokenizer:
+            try:
+                # Handle tensor conversion
+                if isinstance(token_ids, torch.Tensor):
+                    if token_ids.dim() > 1:
+                        token_ids = token_ids[0]
+                    token_ids = token_ids.cpu().tolist()
+                elif isinstance(token_ids, list) and len(token_ids) > 0 and isinstance(token_ids[0], list):
+                    token_ids = token_ids[0]
+                
+                return self.hf_tokenizer.decode(token_ids, skip_special_tokens=False)
+            except Exception as e:
+                logger.error(f"Hugging Face decoding failed: {e}")
+                raise RuntimeError(f"Decoding failed: {e}") from e
+        
+        if not self.sp_processor:
             raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
         
         try:
@@ -377,7 +499,20 @@ class TokenizerManager:
             RuntimeError: If tokenizer is not loaded
             ValueError: If input format is invalid
         """
-        if not self._is_loaded or not self.sp_processor:
+        if not self._is_loaded:
+            raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
+        
+        # Use Hugging Face tokenizer if available
+        if self._is_hf_tokenizer and self.hf_tokenizer:
+            try:
+                if isinstance(token_ids_batch, torch.Tensor):
+                    token_ids_batch = token_ids_batch.cpu().tolist()
+                return self.hf_tokenizer.batch_decode(token_ids_batch, skip_special_tokens=False)
+            except Exception as e:
+                logger.error(f"Hugging Face batch decoding failed: {e}")
+                raise RuntimeError(f"Batch decoding failed: {e}") from e
+        
+        if not self.sp_processor:
             raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
         
         try:
@@ -428,7 +563,19 @@ class TokenizerManager:
         Raises:
             RuntimeError: If tokenizer is not loaded
         """
-        if not self._is_loaded or not self.sp_processor:
+        if not self._is_loaded:
+            raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
+        
+        # Use Hugging Face tokenizer if available
+        if self._is_hf_tokenizer and self.hf_tokenizer:
+            try:
+                encoded = self.hf_tokenizer.encode(text, add_special_tokens=add_special_tokens)
+                return encoded if isinstance(encoded, list) else encoded.tolist()
+            except Exception as e:
+                logger.error(f"Hugging Face encoding failed: {e}")
+                raise RuntimeError(f"Encoding failed: {e}") from e
+        
+        if not self.sp_processor:
             raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
         
         try:
@@ -452,15 +599,19 @@ class TokenizerManager:
     @property
     def vocab_size(self) -> int:
         """Get the vocabulary size."""
-        if not self._is_loaded or not self.sp_processor:
+        if not self._is_loaded:
+            raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
+        
+        if self._is_hf_tokenizer and self.hf_tokenizer:
+            return getattr(self.hf_tokenizer, 'vocab_size', len(self.hf_tokenizer.get_vocab()))
+        
+        if not self.sp_processor:
             raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
         return self.sp_processor.get_piece_size()
     
     def get_vocab_size(self) -> int:
         """Get the vocabulary size (method version for backward compatibility)."""
-        if not self._is_loaded or not self.sp_processor:
-            raise RuntimeError("Tokenizer not loaded. Call load_sentencepiece_tokenizer() first.")
-        return self.sp_processor.get_piece_size()
+        return self.vocab_size
     
     def load_tokenizer(self) -> smp.SentencePieceProcessor:
         """Load tokenizer (alias for load_sentencepiece_tokenizer for consistency)."""

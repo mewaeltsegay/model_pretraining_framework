@@ -205,7 +205,8 @@ class DataPipeline:
         Initialize the DataPipeline.
         
         Args:
-            data_dir: Directory containing JSONL dataset files
+            data_dir: Directory containing JSONL dataset files, or Hugging Face dataset repository ID
+                     (e.g., "username/dataset-name")
             tokenizer_manager: TokenizerManager instance (will create if None)
             max_sequence_length: Maximum sequence length for tokenization
             skip_errors: Whether to skip corrupted data or raise errors
@@ -213,12 +214,23 @@ class DataPipeline:
             max_val_samples: Limit validation samples for testing (None = use all)
             max_test_samples: Limit test samples for testing (None = use all)
         """
+        self.data_dir_str = data_dir
         self.data_dir = Path(data_dir)
         self.max_sequence_length = max_sequence_length
         self.skip_errors = skip_errors
         self.max_train_samples = max_train_samples
         self.max_val_samples = max_val_samples
         self.max_test_samples = max_test_samples
+        
+        # Check if this is a Hugging Face dataset repository ID
+        # HF repos typically have format "username/repo-name" and don't exist as local paths
+        self._is_hf_dataset = (
+            "/" in data_dir and 
+            not self.data_dir.exists() and
+            not data_dir.startswith("./") and
+            not data_dir.startswith("../") and
+            not os.path.isabs(data_dir)
+        )
         
         # Initialize tokenizer manager if not provided
         if tokenizer_manager is None:
@@ -227,15 +239,17 @@ class DataPipeline:
         else:
             self.tokenizer_manager = tokenizer_manager
         
-        # Dataset file paths
-        self.train_file = self.data_dir / "train.jsonl"
-        self.validation_file = self.data_dir / "validation.jsonl"
-        self.test_file = self.data_dir / "test.jsonl"
+        # Dataset file paths (only used for local paths)
+        if not self._is_hf_dataset:
+            self.train_file = self.data_dir / "train.jsonl"
+            self.validation_file = self.data_dir / "validation.jsonl"
+            self.test_file = self.data_dir / "test.jsonl"
+            # Validate data directory
+            self._validate_data_directory()
         
-        # Validate data directory
-        self._validate_data_directory()
-        
-        logger.info(f"Initialized DataPipeline with data_dir: {self.data_dir}")
+        logger.info(f"Initialized DataPipeline with data_dir: {self.data_dir_str}")
+        if self._is_hf_dataset:
+            logger.info(f"  → Loading dataset from Hugging Face Hub")
     
     def _validate_data_directory(self) -> None:
         """
@@ -266,7 +280,7 @@ class DataPipeline:
     
     def load_datasets(self, use_streaming: bool = True) -> Dict[str, Union[Dataset, IterableDataset]]:
         """
-        Load train, validation, and test datasets from JSONL files.
+        Load train, validation, and test datasets from JSONL files or Hugging Face Hub.
         
         Args:
             use_streaming: Whether to use streaming datasets for memory efficiency
@@ -278,6 +292,11 @@ class DataPipeline:
             FileNotFoundError: If required dataset files are missing
             RuntimeError: If dataset loading fails
         """
+        # Load from Hugging Face if it's a repository ID
+        if self._is_hf_dataset:
+            return self._load_from_huggingface(use_streaming)
+        
+        # Otherwise load from local files
         datasets = {}
         
         try:
@@ -338,6 +357,179 @@ class DataPipeline:
         except Exception as e:
             logger.error(f"Failed to load datasets: {e}")
             raise RuntimeError(f"Dataset loading failed: {e}")
+    
+    def _load_from_huggingface(self, use_streaming: bool = True) -> Dict[str, Union[Dataset, IterableDataset]]:
+        """
+        Load datasets from Hugging Face Hub.
+        
+        Args:
+            use_streaming: Whether to use streaming datasets for memory efficiency
+            
+        Returns:
+            Dictionary containing loaded datasets
+            
+        Raises:
+            RuntimeError: If dataset loading fails
+        """
+        try:
+            logger.info(f"Loading dataset from Hugging Face: {self.data_dir_str}")
+            
+            # Load dataset from Hugging Face Hub
+            if use_streaming:
+                hf_dataset = load_dataset(self.data_dir_str, streaming=True)
+            else:
+                hf_dataset = load_dataset(self.data_dir_str, streaming=False)
+            
+            datasets = {}
+            
+            # Convert Hugging Face dataset to our format
+            # Check available splits
+            if isinstance(hf_dataset, dict):
+                # Multiple splits available
+                for split_name in ['train', 'validation', 'test', 'val']:
+                    if split_name in hf_dataset:
+                        # Map 'val' to 'validation' for consistency
+                        target_name = 'validation' if split_name == 'val' else split_name
+                        logger.info(f"Loading {target_name} split from Hugging Face...")
+                        
+                        split_dataset = hf_dataset[split_name]
+                        
+                        # Apply sample limits if specified
+                        max_samples = None
+                        if target_name == 'train' and self.max_train_samples:
+                            max_samples = self.max_train_samples
+                        elif target_name == 'validation' and self.max_val_samples:
+                            max_samples = self.max_val_samples
+                        elif target_name == 'test' and self.max_test_samples:
+                            max_samples = self.max_test_samples
+                        
+                        if max_samples and not use_streaming:
+                            split_dataset = split_dataset.select(range(min(max_samples, len(split_dataset))))
+                            logger.info(f"  → Limited to {max_samples} samples")
+                        
+                        # Convert to our tokenized format
+                        datasets[target_name] = self._convert_hf_dataset(
+                            split_dataset, 
+                            use_streaming=use_streaming,
+                            max_samples=max_samples if use_streaming else None
+                        )
+            else:
+                # Single split, assume it's training data
+                logger.info("Loading single split from Hugging Face (assuming train)...")
+                max_samples = self.max_train_samples if use_streaming else None
+                datasets['train'] = self._convert_hf_dataset(
+                    hf_dataset, 
+                    use_streaming=use_streaming,
+                    max_samples=max_samples
+                )
+            
+            logger.info(f"Successfully loaded {len(datasets)} dataset(s) from Hugging Face")
+            return datasets
+            
+        except Exception as e:
+            logger.error(f"Failed to load dataset from Hugging Face: {e}")
+            raise RuntimeError(f"Failed to load dataset from Hugging Face: {e}") from e
+    
+    def _convert_hf_dataset(
+        self, 
+        hf_dataset: Union[HFDataset, Any], 
+        use_streaming: bool = True,
+        max_samples: Optional[int] = None
+    ) -> Union[Dataset, IterableDataset]:
+        """
+        Convert Hugging Face dataset to our tokenized format.
+        
+        Args:
+            hf_dataset: Hugging Face dataset
+            use_streaming: Whether to use streaming
+            max_samples: Maximum number of samples (for streaming)
+            
+        Returns:
+            Tokenized dataset compatible with our pipeline
+        """
+        if use_streaming:
+            # For streaming, create an iterable dataset wrapper
+            class HFStreamingDataset(IterableDataset):
+                def __init__(self, hf_dataset, tokenizer_manager, max_length, max_samples):
+                    self.hf_dataset = hf_dataset
+                    self.tokenizer_manager = tokenizer_manager
+                    self.max_length = max_length
+                    self.max_samples = max_samples
+                    self._count = 0
+                
+                def __iter__(self):
+                    for item in self.hf_dataset:
+                        if self.max_samples and self._count >= self.max_samples:
+                            break
+                        
+                        # Extract text field
+                        text = item.get('text', '')
+                        if not text or not isinstance(text, str):
+                            continue
+                        
+                        # Tokenize
+                        tokenized = self.tokenizer_manager.tokenize_batch(
+                            [text],
+                            max_length=self.max_length,
+                            padding=False,
+                            truncation=True,
+                            return_tensors="pt",
+                            add_special_tokens=True
+                        )
+                        
+                        self._count += 1
+                        yield {
+                            'input_ids': tokenized['input_ids'][0],
+                            'attention_mask': tokenized['attention_mask'][0],
+                            'text': text
+                        }
+            
+            return HFStreamingDataset(
+                hf_dataset, 
+                self.tokenizer_manager, 
+                self.max_sequence_length,
+                max_samples
+            )
+        else:
+            # For non-streaming, create a regular dataset
+            class HFDatasetWrapper(Dataset):
+                def __init__(self, hf_dataset, tokenizer_manager, max_length):
+                    self.hf_dataset = hf_dataset
+                    self.tokenizer_manager = tokenizer_manager
+                    self.max_length = max_length
+                
+                def __len__(self):
+                    return len(self.hf_dataset)
+                
+                def __getitem__(self, idx):
+                    item = self.hf_dataset[idx]
+                    text = item.get('text', '')
+                    
+                    if not text or not isinstance(text, str):
+                        # Return empty sample if text is invalid
+                        return {
+                            'input_ids': torch.tensor([], dtype=torch.long),
+                            'attention_mask': torch.tensor([], dtype=torch.long),
+                            'text': ''
+                        }
+                    
+                    # Tokenize
+                    tokenized = self.tokenizer_manager.tokenize_batch(
+                        [text],
+                        max_length=self.max_length,
+                        padding=False,
+                        truncation=True,
+                        return_tensors="pt",
+                        add_special_tokens=True
+                    )
+                    
+                    return {
+                        'input_ids': tokenized['input_ids'][0],
+                        'attention_mask': tokenized['attention_mask'][0],
+                        'text': text
+                    }
+            
+            return HFDatasetWrapper(hf_dataset, self.tokenizer_manager, self.max_sequence_length)
     
     def _load_non_streaming_dataset(self, file_path: Path) -> Dataset:
         """
@@ -591,7 +783,16 @@ class LanguageModelingCollator:
         self.return_tensors = return_tensors
         
         # Get padding token ID
-        if hasattr(tokenizer_manager, 'sp_processor') and tokenizer_manager.sp_processor:
+        if hasattr(tokenizer_manager, '_is_hf_tokenizer') and tokenizer_manager._is_hf_tokenizer and tokenizer_manager.hf_tokenizer:
+            # Hugging Face tokenizer
+            self.pad_token_id = tokenizer_manager.hf_tokenizer.pad_token_id
+            if self.pad_token_id is None:
+                self.pad_token_id = tokenizer_manager.hf_tokenizer.unk_token_id
+                if self.pad_token_id is None:
+                    self.pad_token_id = 0  # Fallback
+                logger.warning("No pad token found, using unk token for padding")
+        elif hasattr(tokenizer_manager, 'sp_processor') and tokenizer_manager.sp_processor:
+            # SentencePiece tokenizer
             self.pad_token_id = tokenizer_manager.sp_processor.pad_id()
             if self.pad_token_id == -1:  # No pad token, use unk
                 self.pad_token_id = tokenizer_manager.sp_processor.unk_id()
