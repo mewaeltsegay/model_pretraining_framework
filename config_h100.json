@@ -3,8 +3,6 @@
   "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
   "tokenizer_path": "mewaeltsegay/tokenizer_tigrinya",
   "data_dir": "./dataset",
-  "_comment_tokenizer": "Use Hugging Face tokenizer: 'username/tokenizer-name'",
-  "_comment_dataset": "Use Hugging Face dataset: 'username/dataset-name'",
   "batch_size": 32,
   "gradient_accumulation_steps": 1,
   "max_sequence_length": 1024,
