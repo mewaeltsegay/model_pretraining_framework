@@ -723,8 +723,31 @@ class TrainingController:
             
             # Validation
             val_metrics = {}
-            if val_dataloader is not None and epoch % (self.config.eval_steps // len(train_dataloader)) == 0:
-                val_metrics = self.validate_model(model, val_dataloader)
+            if val_dataloader is not None:
+                # Calculate how often to evaluate based on eval_steps
+                # eval_steps is step-based, so convert to epoch-based frequency
+                should_eval = False
+                try:
+                    dataloader_len = len(train_dataloader)
+                    if dataloader_len > 0:
+                        batches_per_epoch = dataloader_len
+                        if self.config.eval_steps >= batches_per_epoch:
+                            # Evaluate every N epochs where N = eval_steps / batches_per_epoch
+                            epochs_per_eval = max(1, self.config.eval_steps // batches_per_epoch)
+                            should_eval = (epoch % epochs_per_eval == 0) or (epoch == self.config.num_epochs - 1)
+                        else:
+                            # If eval_steps < batches_per_epoch, evaluate every epoch
+                            # (since we'll hit eval_steps multiple times per epoch)
+                            should_eval = True
+                    else:
+                        # If we can't determine length, evaluate every epoch
+                        should_eval = True
+                except (TypeError, AttributeError):
+                    # For datasets without length, evaluate every epoch
+                    should_eval = True
+                
+                if should_eval:
+                    val_metrics = self.validate_model(model, val_dataloader)
                 
                 # Save checkpoint if this is the best model
                 if val_metrics.get("is_best", False):
