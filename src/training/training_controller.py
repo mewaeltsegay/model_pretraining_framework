@@ -490,7 +490,7 @@ class TrainingController:
                     batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                     
                     # Forward pass with mixed precision
-                    with autocast(enabled=self.config.use_mixed_precision):
+                    with autocast(device_type='cuda', enabled=self.config.use_mixed_precision):
                         outputs = model(**batch)
                         loss = outputs.loss
                     
