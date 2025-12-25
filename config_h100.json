@@ -1,6 +1,6 @@
 {
-  "title": "QWEN PRETRAINING - H100 GPU OPTIMIZED",
-  "model_name": "Qwen/Qwen2-0.5B",
+  "title": "TinyLlama PRETRAINING SCRIPT",
+  "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
   "tokenizer_path": "./tokenizer",
   "data_dir": "./dataset",
   "batch_size": 32,
