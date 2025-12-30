@@ -84,6 +84,11 @@ class TrainingConfig:
     allow_vocab_mismatch: bool = True  # Allow vocabulary size mismatch between model and tokenizer
     resize_token_embeddings: bool = True  # Resize model embeddings to match tokenizer
     
+    # Early stopping
+    early_stopping_enabled: bool = False  # Enable early stopping based on validation loss
+    early_stopping_patience: int = 3  # Number of epochs without improvement before stopping
+    early_stopping_min_delta: float = 0.0  # Minimum change to qualify as improvement
+    
     def __post_init__(self):
         """Validate configuration after initialization."""
         self.validate()
@@ -154,6 +159,13 @@ class TrainingConfig:
         
         if self.weight_decay < 0:
             raise ValueError("Weight decay cannot be negative")
+        
+        # Validate early stopping parameters
+        if self.early_stopping_patience < 1:
+            raise ValueError("Early stopping patience must be at least 1")
+        
+        if self.early_stopping_min_delta < 0:
+            raise ValueError("Early stopping min_delta cannot be negative")
     
     def _validate_memory_constraints(self) -> None:
         """Validate memory-related parameters."""

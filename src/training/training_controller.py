@@ -56,6 +56,12 @@ class TrainingController:
         self.global_step = 0
         self.best_val_loss = float('inf')
         
+        # Early stopping state
+        self.early_stopping_enabled = config.early_stopping_enabled
+        self.early_stopping_patience = config.early_stopping_patience
+        self.early_stopping_min_delta = config.early_stopping_min_delta
+        self.epochs_without_improvement = 0
+        
         # Memory monitoring
         self.initial_memory = None
         self.peak_memory = 0
@@ -679,6 +685,52 @@ class TrainingController:
         """
         return self.checkpoint_manager.get_latest_checkpoint()
     
+    def check_early_stopping(self, val_loss: Optional[float]) -> bool:
+        """
+        Check if early stopping should be triggered.
+        
+        Args:
+            val_loss: Current validation loss (None if not evaluated)
+            
+        Returns:
+            True if training should stop, False otherwise
+        """
+        if not self.early_stopping_enabled:
+            return False
+        
+        # Early stopping only works with validation loss
+        if val_loss is None:
+            return False
+        
+        # Check if validation loss improved
+        improvement = self.best_val_loss - val_loss
+        
+        if improvement > self.early_stopping_min_delta:
+            # Validation loss improved
+            self.epochs_without_improvement = 0
+            logger.info(
+                f"Validation loss improved by {improvement:.6f} "
+                f"(best: {self.best_val_loss:.6f} -> {val_loss:.6f})"
+            )
+            return False
+        else:
+            # No improvement
+            self.epochs_without_improvement += 1
+            logger.info(
+                f"No validation loss improvement for {self.epochs_without_improvement} epoch(s). "
+                f"Best: {self.best_val_loss:.6f}, Current: {val_loss:.6f}, "
+                f"Patience: {self.early_stopping_patience}"
+            )
+            
+            if self.epochs_without_improvement >= self.early_stopping_patience:
+                logger.warning(
+                    f"Early stopping triggered! No improvement for {self.epochs_without_improvement} epochs. "
+                    f"Best validation loss: {self.best_val_loss:.6f}"
+                )
+                return True
+        
+        return False
+    
     def train_with_checkpointing(self, model: AutoModelForCausalLM, 
                                 train_dataloader: DataLoader, 
                                 val_dataloader: Optional[DataLoader] = None,
@@ -773,6 +825,15 @@ class TrainingController:
                 
                 if should_eval:
                     val_metrics = self.validate_model(model, val_dataloader)
+                    
+                    # Check for early stopping
+                    if self.check_early_stopping(val_metrics.get("val_loss")):
+                        logger.info(f"Stopping training early at epoch {epoch + 1}")
+                        # Combine metrics before breaking
+                        epoch_metrics = {**train_metrics, **val_metrics, "epoch": epoch}
+                        training_metrics.append(epoch_metrics)
+                        self.log_training_metrics(epoch_metrics, self.global_step, "epoch")
+                        break
                 
                 # Save checkpoint if this is the best model
                 if val_metrics.get("is_best", False):

@@ -7,7 +7,7 @@
   "gradient_accumulation_steps": 1,
   "max_sequence_length": 1024,
   "learning_rate": 5e-05,
-  "num_epochs": 3,
+  "num_epochs": 10,
   "warmup_steps": 500,
   "weight_decay": 0.01,
   "max_gpu_memory_gb": 75.0,
@@ -22,6 +22,9 @@
   "save_total_limit": 2,
   "max_train_samples": null,
   "max_val_samples": null,
-  "enable_tensorboard": true
+  "enable_tensorboard": true,
+  "early_stopping_enabled": true,
+  "early_stopping_patience": 3,
+  "early_stopping_min_delta": 0.0
 }
 
