@@ -1,0 +1,28 @@
+{
+    "title": "TinyLlama FINETUNING SCRIPT - Full Articles",
+    "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "tokenizer_path": "mewaeltsegay/tokenizer_tigrinya",
+    "data_dir": "mewaeltsegay/tlmd_training",
+    "batch_size": 16,
+    "gradient_accumulation_steps": 2,
+    "max_sequence_length": 4096,
+    "learning_rate": 2e-05,
+    "num_epochs": 6,
+    "warmup_steps": 200,
+    "weight_decay": 0.01,
+    "max_gpu_memory_gb": 75.0,
+    "use_mixed_precision": true,
+    "gradient_checkpointing": true,
+    "logging_steps": 50,
+    "save_steps": 500,
+    "eval_steps": 250,
+    "output_dir": "./checkpoints",
+    "seed": 42,
+    "dataloader_num_workers": 8,
+    "save_total_limit": 3,
+    "max_train_samples": null,
+    "max_val_samples": null,
+    "enable_tensorboard": true
+  }
+  
+  
