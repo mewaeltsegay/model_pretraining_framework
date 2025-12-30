@@ -1,8 +1,8 @@
 {
     "title": "TinyLlama FINETUNING SCRIPT - Full Articles",
-    "model_name": "mewaelstegay/tinyllama_tig",
+    "model_name": "mewaeltsegay/tinyllama_tig",
     "tokenizer_path": "mewaeltsegay/tokenizer_tigrinya",
-    "data_dir": "mewaeltsegay/finetuning_dataset",
+    "data_dir": "mewaeltsegay/finetuning_datatset",
     "batch_size": 16,
     "gradient_accumulation_steps": 2,
     "max_sequence_length": 4096,
